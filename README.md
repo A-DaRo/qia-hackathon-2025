@@ -1,61 +1,197 @@
-# Pan-European Quantum Internet Hackathon 2025
+# Pan-European Quantum Internet Hackathon 2025 - QKD Extension
 
-Welcome to the QIA 2025 Hackathon! Thank you for joining us.
+This repository contains the implementation of an extended Quantum Key Distribution (QKD) protocol for the QIA Hackathon 2025 challenge. The project extends the baseline BB84 implementation in SquidASM with production-grade post-processing components.
 
-If you already have SquidASM up and running you can go directly to the [**challenges**](#challenges)! We have also included some [**templates**](#templates) for you to immediately start with them. If you need a refresher on how SquidASM works you can check the [tutorial](https://squidasm.readthedocs.io/en/latest/).
+## Repository Structure
 
+```
+qia-hackathon-2025/
+├── hackathon_challenge/   # Main implementation (see below)
+├── docs/                  # Documentation
+│   ├── challenges/qkd/    # Challenge specifications
+│   ├── tutorials/         # SquidASM usage guides
+│   ├── api/               # API reference
+│   └── Advanced/          # Advanced topics
+├── templates/             # Starter templates for 2/3-node networks
+└── challenges/            # Original challenge PDFs
+```
 
-If you don't have SquidASM installed yet (it's not a trivial process...) check the following section for a to-the-point guide. And don't hesitate to ask your local organizers if you are encountering problems! 
+### hackathon_challenge/
 
-## SquidASM
+The core implementation directory:
 
-First of all, you will need to install the SquidASM simulator. There is a detailed [installation guide](https://squidasm.readthedocs.io/en/latest/installation.html), but we include here the essential points.
+| Directory | Purpose |
+|:----------|:--------|
+| `core/` | Protocol orchestration (`AliceProgram`, `BobProgram`) |
+| `auth/` | Wegman-Carter authentication over classical channels |
+| `reconciliation/` | Cascade error correction with backtracking |
+| `verification/` | Polynomial hash-based key verification |
+| `privacy/` | Toeplitz matrix privacy amplification |
+| `configs/` | YAML configuration files for scenarios |
+| `scripts/` | Simulation execution and analysis tools |
+| `tests/` | Unit and integration tests |
+| `results/` | Simulation output (JSON, CSV, reports) |
 
-If you haven't yet, start by making an account in the NetSquid [forum](https://forum.netsquid.org/ucp.php?mode=register).
+See [hackathon_challenge/README.md](hackathon_challenge/README.md) for detailed component documentation.
 
-If you are using Linux or MacOS, you can proceed to the next step. If you are using Windows you will need a [Windows Subsystem for Linux (WSL)](https://learn.microsoft.com/en-us/windows/wsl/install), to get it running:
-1. Open PowerShell in administrator mode by right-clicking and selecting "Run as administrator".
-2. Type `wsl --install` in the PowerShell and hit enter, then restart your computer. 
-3. Open Ubuntu (you now have access to it from Windows' search bar) and set up a User Name and Password (note that whilst entering the Password nothing will appear on screen, this is normal).
+### docs/
 
-We recommend you install SquidASM in a [Python virtual environment](https://docs.python.org/3/library/venv.html), step by step:
-1. Go to the directory where you want to work on your hackathon project (if you are using Windows make sure you are in the WSL terminal!) and type `python3 -m venv .venv`, this will create a a folder named ".venv" containing a virtual environment.
-2. To activate an existing virtual environment, say the one in .venv, type `source .venv/bin/activate`. You can deactivate a virtual environment where you are working just by typing `deactivate`, but we will be installing SquidASM on .venv, so it will need it to be active every time you are working on SquidASM! 
-3. If you don't have git installed, check [here](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git) how to do so. In short, if you are in MacOS typing `git --version` in the terminal should be enough, if you are in WSL type instead `sudo apt install git-all`.
-4. To install SquidASM in an active virtual environment, just clone the git repository `git clone https://github.com/QuTech-Delft/squidasm.git` somewhere outside of your own project directory so that you don't accidentally submit squidasm with your hackathon contribution. This will create a new folder with the name squidasm and download the squidasm package to that folder. NetSquid needs you to identify yourself before installation, for this type first `export NETSQUIDPYPI_USER=user1234` and then `export NETSQUIDPYPI_PWD=password1234` (with your own user name and password).
-5. Finally, you can install SquidASM by typing `make install`, you can verify the installation with `make verify`.
+| Directory | Content |
+|:----------|:--------|
+| `challenges/qkd/` | Theoretical and technical specifications for the QKD extension challenge |
+| `tutorials/` | Step-by-step SquidASM guides (basics, NetQASM, simulation control) |
+| `api/` | Reference documentation for SquidASM classes and functions |
+| `Advanced/` | Custom protocols, noise models, debugging |
 
-You are now ready to **go to your project working directory** and start programming your application! Don't forget to check the [templates section](#templates) for some extra help :)
+## Installation
 
+### Prerequisites
 
-PS: if you don't have a favorite code editor yet, you can use [Visual Studio Code (VS Code)](https://code.visualstudio.com/download). For Windows users, you can further [integrate it with WSL](https://learn.microsoft.com/en-us/windows/wsl/tutorials/wsl-vscode).
+- Python 3.9 or higher
+- NetSquid account (register at [forum.netsquid.org](https://forum.netsquid.org))
+- Linux or macOS (Windows users require WSL)
 
-## Templates
+### Setup
 
-To simplify the start, we have included a [template folder](templates/) that includes templates to run [2](templates/2_nodes/) and [3](templates/3_nodes/) node applications. Depending on the challenge you choose, we recommend you copy the relevant folder and start modifying the templates directly.
+1. Create and activate a virtual environment:
 
-Recall from the [SquidASM tutorial](https://squidasm.readthedocs.io/en/latest/) that your quantum network application has roughly three components:
-1. The network `config.yml`: this file specifies the network layout and end node labels.
-2. The application `application.py`: this file contains individual programs that run on end nodes (e.g. think of what Alice and Bob will do).
-3. The simulation `run_simulation.py`: this file is the executable that will run the simulation.
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
 
-## Challenges
+2. Set NetSquid credentials:
 
-This year we have **six different challenges** you can choose to work on during the hackathon! We have included all levels of difficulties, so that regardless of your background you can both grow your knowledge about quantum networking, and actually program applications.
+```bash
+export NETSQUIDPYPI_USER=your_username
+export NETSQUIDPYPI_PWD=your_password
+```
 
-All the challenges can be found in the [challenges folder](challenges/), but we include here a short categorization and description to help you make a choice.
+3. Install SquidASM (from a separate directory):
 
-### Beginner
+```bash
+git clone https://github.com/QuTech-Delft/squidasm.git
+cd squidasm
+make install
+make verify
+cd ..
+```
 
-- [CHSH](challenges/chsh_challenge.pdf) (2 nodes): the CHSH game is a two-player cooperative game where players have a quantum advantage when using entanglement as a resource. In this challenge we invite you to compare the classical and quantum strategies for the CHSH game.
+4. Install this package:
 
-### Intermediate
+```bash
+cd qia-hackathon-2025
+pip install -e .
+pip install -e ".[dev]"  # For development tools (pytest, mypy, black)
+```
 
-- [Coordination](challenges/coordination_challenge.pdf) (2 nodes): in distributed systems parties often need to coordinate their actions based on local observations, a task that can have better performance if the parties pre-share entanglement. In this challenge we invite you to compare real use-case coordination tasks with classical and quantum strategies.
-- [Digital payments](challenges/secure_quantum_digital_payments.pdf) (3 nodes): contrary to transactions with physical money, digital payments need to be verified by a central bank to ensure there is not counterfeiting. In this challenge we invite you to implement a quantum digital payment protocol.
+## Running Simulations
 
-### Advanced
+### Single Simulation
 
-- [BQC Grover](challenges/grover_search_using_bqc.pdf) (2 nodes): blind quantum computation allows a client to delegate a computation to a quantum server whilst ensuring that the input, computation and output remain secret. In this challenge we invite you to implement Grover's search blindly.
-- [Leader election](challenges/quantum_leader_election.pdf) (2 nodes): quantum leader election allows for a set of distrusting parties to agree on a leader in a far way. In this challenge we invite you to implement a leader election protocol based on quantum coin flipping.
-- [QKD extension](challenges/extending_qkd_implementation.pdf) (2 nodes): QKD is an information-theoretically secure key-exchange protocol already in commercial deployment phase. SquidASM does already have a basic implementation of QKD, but in this challenge we invite you to extend this implementation to make it more efficient and robust.
+Execute a single QKD session with default or custom parameters:
+
+```bash
+cd hackathon_challenge
+python scripts/run_simulation.py                     # Default parameters
+python scripts/run_simulation.py --num-pairs 500     # Custom EPR pairs
+python scripts/run_simulation.py --noise 0.05        # Set channel noise
+python scripts/run_simulation.py --log-level DEBUG   # Verbose output
+```
+
+### Scenario Execution
+
+Run predefined scenarios from configuration files:
+
+```bash
+python scripts/run_scenarios.py                      # Run all scenarios
+python scripts/run_scenarios.py --scenario low_noise # Specific scenario
+python scripts/run_scenarios.py --list               # List available scenarios
+python scripts/run_scenarios.py --mock               # Mock mode (no SquidASM)
+```
+
+Available scenarios in `configs/scenarios/`:
+- `quick_test.yaml` - Fast validation run
+- `low_noise.yaml` - QBER approximately 2%
+- `medium_noise.yaml` - QBER approximately 5%
+- `high_noise.yaml` - QBER approximately 10%
+- `threshold_test.yaml` - Near abort threshold (11%)
+
+### Result Analysis
+
+Analyze completed simulation results:
+
+```bash
+python scripts/analyze_results.py results/*.json    # Analyze specific files
+python scripts/analyze_results.py --all             # Analyze all results
+python scripts/analyze_results.py --all --plot      # Generate visualizations
+```
+
+## Output Structure
+
+Simulation results are saved to `hackathon_challenge/results/` with timestamped filenames:
+
+```
+results/
+├── results_2025-11-28T13-36-30-428019.json    # Structured result data
+├── results_2025-11-28T13-36-30-428019.csv     # Tabular format
+├── results_2025-11-28T13-36-30-428019_report.txt  # Human-readable summary
+└── plots/                                      # Generated visualizations
+```
+
+### JSON Output Format
+
+```json
+{
+  "scenario": "quick_test",
+  "timestamp": "2025-11-28T13:36:30.428019",
+  "runs": [
+    {
+      "success": true,
+      "qber": 0.0156,
+      "key_length": 42,
+      "leakage": 128,
+      "secret_key": "..."
+    }
+  ],
+  "statistics": {
+    "success_rate": 1.0,
+    "avg_qber": 0.0156,
+    "avg_key_length": 42
+  }
+}
+```
+
+### Report Format
+
+```
+======================================================================
+QKD SIMULATION RESULTS SUMMARY
+======================================================================
+Scenario: quick_test
+Total runs:      5
+Successful:      5
+Success rate:    100.0%
+QBER (avg):      0.0156 +/- 0.002
+Key length (avg): 42
+======================================================================
+```
+
+## Testing
+
+Run the test suite:
+
+```bash
+pytest hackathon_challenge/tests/ -v
+pytest --cov=hackathon_challenge --cov-report=html
+```
+
+## Documentation
+
+- [Theoretical Aspects](docs/challenges/qkd/extending_qkd_theorethical_aspects.md) - Mathematical framework for Cascade and privacy amplification
+- [Technical Aspects](docs/challenges/qkd/extending_qkd_technical_aspects.md) - SquidASM implementation architecture
+- [SquidASM Tutorial](https://squidasm.readthedocs.io/en/latest/) - Official SquidASM documentation
+
+## License
+
+See LICENSE file in project root.
