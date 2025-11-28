@@ -372,7 +372,7 @@ pip install -e ".[dev]"
 
 ### Summary
 
-**Status**: ✅ Complete  
+**Status**: Complete  
 **Test Results**: All scenario simulations working, results saving correctly
 
 ### Implemented Components
