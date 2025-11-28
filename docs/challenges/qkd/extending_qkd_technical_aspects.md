@@ -1,237 +1,627 @@
-# Technical Design: Extending QKD Implementation
+## Technical Design: Extending QKD Implementation
 
-This document outlines the technical architecture and implementation details for extending the basic BB84 QKD protocol in SquidASM. It translates the theoretical requirements into concrete Python classes, data structures, and SquidASM API calls.
+This document specifies the SquidASM-level architecture for the QKD post-processing pipeline. It mirrors the four-step theoretical structure from
+`extending_qkd_theorethical_aspects.md` and maps each step to concrete classes, methods, and APIs.
 
-## 1. Architecture Overview
+The reference baseline implementation is `squidasm/examples/applications/qkd/example_qkd.py`, which already provides:
 
-The solution should be modular, separating the core QKD logic (state distribution) from the classical post-processing steps. We will extend the existing `QkdProgram` structure and introduce helper classes for each stage of the post-processing pipeline.
+- `QkdProgram` base class (entanglement distribution, sifting, basic error sampling).
+- `AliceProgram` and `BobProgram` with raw key extraction.
+- `ClassicalSocket` implementation in `squidasm/sim/stack/csocket.py`.
 
-### Module Structure
+All new code should live under `qia-hackathon-2025/hackathon_challenge/` and follow the modular layout:
+
 ```python
-# Proposed file structure
 hackathon_challenge/
-├── protocol.py          # Main Alice/Bob programs (extends QkdProgram)
-├── reconciliation.py    # Cascade protocol implementation
-├── privacy.py           # Privacy amplification (Toeplitz)
-├── auth.py              # Authenticated socket wrapper
-└── util.py              # Hashing and math utilities
+├── protocol.py          # Main Alice/Bob programs (extend QkdProgram)
+├── reconciliation.py    # CascadeReconciliator + helpers
+├── privacy.py           # PrivacyAmplifier + QBER/length helpers
+├── auth.py              # AuthenticatedSocket + key buffer
+└── verify.py            # KeyVerifier + polynomial hashing
 ```
 
-## 2. Classical Communication & Authentication
+Throughout this document, all functions that touch the network are assumed to be **generators** returning
+`Generator[EventExpression, None, T]` and must be called with `yield from` from `Program.run()`.
 
-The challenge requires authenticated public channels. In SquidASM, classical communication is handled via `ClassicalSocket`. We will implement a wrapper class `AuthenticatedSocket` that transparently handles message signing and verification using HMAC.
+---
 
-### 2.1. AuthenticatedSocket Wrapper
+## Step 1 – Key Reconciliation and Verification
 
-This class wraps a standard `ClassicalSocket` and a shared secret key (simulating the pre-shared key required for QKD).
+Step 1 combines the *Cascade* reconciliation protocol with a *universal-hash-based* key verification stage. It extends the
+basic `raw_key` pipeline in `example_qkd.py` with two concrete classes:
 
-**Key Components:**
-*   **HMAC-SHA256**: Used for message integrity and authenticity.
-*   **Serialization**: Messages must be deterministically serialized before signing.
+- `CascadeReconciliator`: interactive information reconciliation over an `AuthenticatedSocket`.
+- `KeyVerifier`: polynomial hashing over $GF(2^n)$ to check post-reconciliation equality.
 
-```python
-import hmac
-import hashlib
-import pickle
-from squidasm.sim.stack.csocket import ClassicalSocket
+### 1.1 Mapping to Theoretical Framework
 
-class AuthenticatedSocket:
-    def __init__(self, socket: ClassicalSocket, key: bytes):
-        self.socket = socket
-        self.key = key
+Theoretical Step 1 describes:
 
-    def send_structured(self, msg: StructuredMessage):
-        # 1. Serialize payload
-        payload_bytes = pickle.dumps(msg.payload)
-        
-        # 2. Compute HMAC
-        signature = hmac.new(self.key, payload_bytes, hashlib.sha256).digest()
-        
-        # 3. Wrap in a container message
-        # We send a tuple: (original_msg, signature)
-        envelope = StructuredMessage(msg.header, (msg.payload, signature))
-        self.socket.send_structured(envelope)
+- Binary Symmetric Channel model and QBER $p$.
+- Cascade multi-pass structure (blocks, permutations, backtracking).
+- Polynomial hashing as a universal verification primitive.
 
-    def recv_structured(self) -> Generator[EventExpression, None, StructuredMessage]:
-        # 1. Receive envelope
-        envelope = yield from self.socket.recv_structured()
-        payload, signature = envelope.payload
-        
-        # 2. Verify HMAC
-        payload_bytes = pickle.dumps(payload)
-        expected_signature = hmac.new(self.key, payload_bytes, hashlib.sha256).digest()
-        
-        if not hmac.compare_digest(signature, expected_signature):
-            raise SecurityError("Authentication failed: Invalid signature")
-            
-        # 3. Return original message structure
-        return StructuredMessage(envelope.header, payload)
-```
+In SquidASM terms:
 
-**Integration:**
-In `AliceProgram` and `BobProgram`, replace direct `csocket` usage with `AuthenticatedSocket`.
+- $K_A, K_B$ correspond to the `raw_key` lists produced by `AliceProgram` and `BobProgram` in `example_qkd.py`.
+- Each Cascade pass is a pure Python loop with occasional `yield from socket.recv_structured()` / `socket.send_structured()` calls.
+- Hash verification uses a helper `KeyVerifier` that exchanges one or two authenticated messages after Cascade.
 
-## 3. Step 1: Key Reconciliation (Cascade Protocol)
+### 1.2 `CascadeReconciliator` Class Design
 
-We will implement the **Cascade** protocol. This requires an interactive exchange of parity bits.
-
-### 3.1. Data Structures
-We need efficient bit manipulation. `numpy.array` (dtype=uint8) or Python's `bitarray` (if available) are suitable. Given the environment, `numpy` is preferred.
+`CascadeReconciliator` operates on a local `numpy` bit array and an `AuthenticatedSocket`. It runs entirely in the
+classical phase of `Program.run()`.
 
 ```python
+from dataclasses import dataclass
+from typing import Generator, List, Optional, Tuple
+
 import numpy as np
+from netqasm.sdk.classical_communication.message import StructuredMessage
+from pydynaa import EventExpression
+
+from hackathon_challenge.auth import AuthenticatedSocket
+
 
 @dataclass
-class CascadeBlock:
-    indices: List[int]  # Indices of bits in this block
-    parity: int         # 0 or 1
+class PassHistory:
+    """Stores parity information for backtracking across passes.
+
+    Attributes
+    ----------
+    pass_index : int
+        Index of the Cascade pass.
+    block_index : int
+        Index of the block within the pass.
+    indices : List[int]
+        Global key indices contained in this block.
+    parity : int
+        Parity (0 or 1) at the time it was last checked.
+    """
+
+    pass_index: int
+    block_index: int
+    indices: List[int]
+    parity: int
+
+
+class CascadeReconciliator:
+    """Interactive Cascade implementation using an authenticated classical channel.
+
+    Parameters
+    ----------
+    socket : AuthenticatedSocket
+        Authenticated classical channel to the peer.
+    is_alice : bool
+        True if this party initiates parities and binary searches.
+    key : List[int]
+        Local raw key bits (0/1) before reconciliation.
+    rng_seed : int
+        Shared permutation seed; must match on Alice and Bob.
+    """
+
+    def __init__(
+        self,
+        socket: AuthenticatedSocket,
+        is_alice: bool,
+        key: List[int],
+        rng_seed: int,
+    ) -> None:
+        self._socket = socket
+        self._is_alice = is_alice
+        self._key = np.array(key, dtype=np.uint8)
+        self._rng_seed = rng_seed
+        self._history: List[PassHistory] = []
+        self._leakage_bits: int = 0
+
+    def reconcile(self) -> Generator[EventExpression, None, int]:
+        """Run all Cascade passes and return total parity leakage.
+
+        All network operations inside this method must use ``yield from``.
+        The caller (typically ``AliceProgram.run`` / ``BobProgram.run``) must
+        delegate with ``yield from reconciler.reconcile()``.
+        """
+
+        # Sketch: 3–4 passes with increasing block sizes.
+        block_size = self._initial_block_size()
+        for pass_index in range(3):
+            yield from self._run_pass(pass_index, block_size)
+            block_size *= 2
+
+        # After all passes, keys should be reconciled with high probability.
+        return self._leakage_bits
+
+    def get_key(self) -> List[int]:
+        """Return the reconciled key as a Python list of bits."""
+
+        return self._key.tolist()
+
+    def _initial_block_size(self) -> int:
+        # Simple heuristic; can be refined using theoretical formulas
+        return max(4, len(self._key) // 50)
+
+    def _run_pass(
+        self, pass_index: int, block_size: int
+    ) -> Generator[EventExpression, None, None]:
+        # 1) Apply permutation based on shared RNG seed and pass index
+        permuted_indices = self._permute_indices(pass_index)
+        # 2) Partition permuted key into blocks
+        # 3) Exchange parities and run binary search on mismatches
+        #    using StructuredMessage and strict Alice/Bob turn-taking
+        #
+        # Implementation detail intentionally omitted here; see
+        # Section 1.3 for the binary search communication pattern.
+        return None
+
+    def _permute_indices(self, pass_index: int) -> np.ndarray:
+        rng = np.random.RandomState(self._rng_seed + pass_index)
+        indices = np.arange(len(self._key))
+        rng.shuffle(indices)
+        return indices
+
+    # Additional helpers: _compute_parity, _record_history, backtracking, etc.
 ```
 
-### 3.2. The `CascadeReconciliator` Class
+#### State Management and Backtracking (`PassHistory`)
 
-This class manages the state of the reconciliation process.
+Backtracking implements the “cascade” effect from the theory document. Implementation-wise:
 
-**Methods:**
-*   `run_pass(pass_index, block_size)`: Executes one pass of Cascade.
-*   `binary_search(block_indices)`: The BINARY primitive to locate errors.
-*   `compute_parity(indices)`: Helper to XOR bits at given indices.
+- For every block parity you send/receive, append a `PassHistory` instance.
+- When a bit is flipped in a later pass, recompute affected block parities in earlier passes by scanning `_history` for
+  entries whose `indices` include the flipped bit.
+- If a previously even block becomes odd, trigger a new `binary_search` on that block.
 
-**Protocol Flow (Alice):**
-1.  **Shuffle**: Apply permutation for the current pass (using a seeded RNG so Bob matches).
-2.  **Partition**: Split key into blocks of size $k$.
-3.  **Send Parities**: Compute parity for each block and send list to Bob.
-4.  **Handle Corrections**: Wait for Bob to report error locations (if any) found via Binary Search.
-5.  **Backtrack**: If a bit flips, check previous passes for newly exposed odd parities.
+This design keeps reconciliation state explicit and testable: `_permute_indices`, parity computation, and backtracking
+can be unit-tested without running SquidASM.
 
-**Protocol Flow (Bob):**
-1.  **Shuffle & Partition**: Match Alice's permutation and blocking.
-2.  **Receive Parities**: Get Alice's parity map.
-3.  **Compare**: Compute local parities. Identify blocks with mismatch.
-4.  **Binary Search**: For each mismatching block, interactively narrow down the error.
-    *   *SquidASM Note*: This involves a loop of `send`/`yield from recv` calls inside the `binary_search` method.
-5.  **Correct**: Flip the erroneous bit.
-6.  **Backtrack**: Recursively fix errors in previous passes.
+### 1.3 Binary Search Protocol with `StructuredMessage`
 
-### 3.3. SquidASM Implementation Details
+Binary search is implemented as a deterministic request/response protocol over `AuthenticatedSocket`. To avoid deadlock,
+only **one side drives** the search; the other responds.
 
-The `binary_search` is the most communication-intensive part.
+Message headers (`StructuredMessage.header`) should be short, explicit strings, for example:
+
+- `"CASCADE_REQ"` – Bob requests parity of a sub-block from Alice.
+- `"CASCADE_PARITY"` – Alice replies with a single-bit parity.
+- `"CASCADE_DONE"` – Bob indicates that the error index has been found.
+
+Sketch of the Bob-side primitive:
 
 ```python
-def binary_search_alice(self, socket, indices):
-    # Recursive or iterative bisection
-    current_indices = indices
-    while len(current_indices) > 1:
-        # Split
-        mid = len(current_indices) // 2
-        left_half = current_indices[:mid]
-        
-        # Send parity of left half
-        p_left = self.compute_parity(left_half)
-        socket.send_structured(StructuredMessage("BinaryParity", p_left))
-        
-        # Wait for Bob to tell us which half has the error
-        # (In optimized Cascade, Bob drives this, Alice just answers)
-        direction = (yield from socket.recv_structured()).payload
-        
-        if direction == 'LEFT':
-            current_indices = left_half
+def _binary_search_bob(
+    self, block_indices: List[int]
+) -> Generator[EventExpression, None, int]:
+    left = 0
+    right = len(block_indices)
+    while right - left > 1:
+        mid = (left + right) // 2
+        left_indices = block_indices[left:mid]
+
+        # Request parity of left half from Alice
+        req = StructuredMessage("CASCADE_REQ", left_indices)
+        self._socket.send_structured(req)
+        parity_msg = yield from self._socket.recv_structured()
+        assert parity_msg.header == "CASCADE_PARITY"
+        left_parity = int(parity_msg.payload)
+
+        # Compare with local parity to decide which half contains the error
+        local_left_parity = self._compute_parity(left_indices)
+        if local_left_parity != left_parity:
+            right = mid
         else:
-            current_indices = current_indices[mid:]
+            left = mid
+
+    error_index = block_indices[left]
+    self._key[error_index] ^= 1
+    done = StructuredMessage("CASCADE_DONE", error_index)
+    self._socket.send_structured(done)
+    return error_index
 ```
 
-**Optimization**: To reduce round-trips, Bob should drive the search. Alice sends the top-level parities. Bob detects a mismatch. Bob then asks Alice "Give me parity of first half of block X". Alice replies. Bob decides to go left or right.
+Key SquidASM detail: both `recv_structured` calls above must be used as `yield from self._socket.recv_structured()`
+from within a generator.
 
-## 4. Step 2: Verification (Polynomial Hashing)
+### 1.4 Key Verification (`KeyVerifier`)
 
-After Cascade, we verify $K_A = K_B$ using polynomial hashing over a Galois Field or a large prime field.
-
-### 4.1. Implementation Strategy
-We can treat the key bits as coefficients of a polynomial $P(x)$ and evaluate it at a random point $x$.
-
-**Math:**
-$H(K) = \sum_{i=0}^{n-1} k_i \cdot x^i \pmod p$
-
-Where $p$ is a large prime (e.g., $2^{127}-1$, a Mersenne prime) to ensure collision resistance.
+After reconciliation, `KeyVerifier` implements the polynomial hashing primitive from Step 1 of the theoretical doc.
+It operates purely classically, using the authenticated channel to exchange seeds and tags.
 
 ```python
-def poly_hash(key_bits: np.ndarray, x: int, prime: int) -> int:
-    # Horner's method for polynomial evaluation
-    h = 0
-    for bit in reversed(key_bits):
-        h = (h * x + int(bit)) % prime
-    return h
+from typing import Sequence
+
+
+class KeyVerifier:
+    """Implements polynomial hashing over GF(2^n) for key equality check."""
+
+    def __init__(self, tag_bits: int = 64) -> None:
+        self._tag_bits = tag_bits
+
+    def verify(
+        self,
+        socket: AuthenticatedSocket,
+        key: Sequence[int],
+        is_alice: bool,
+    ) -> Generator[EventExpression, None, bool]:
+        # Sketch only: concrete GF(2^n) math omitted.
+        # 1) Alice samples random seed r and sends (r, tag_A).
+        # 2) Bob computes tag_B and sends MATCH/MISMATCH.
+        # 3) Both sides return True/False.
+        return False
 ```
 
-**Protocol:**
-1.  Alice generates a random $x$ and a random salt.
-2.  Alice computes $h_A = \text{poly\_hash}(K_A, x, p)$.
-3.  Alice sends $(x, h_A)$ to Bob (Authenticated!).
-4.  Bob computes $h_B = \text{poly\_hash}(K_B, x, p)$.
-5.  Bob verifies $h_A == h_B$.
+Input/output behaviour:
 
-## 5. Step 3: Privacy Amplification (Toeplitz Matrix)
+- **Input:** local reconciled key bits and an `AuthenticatedSocket`.
+- **Output:** `True` iff keys are equal with collision probability bounded by the chosen security parameter.
 
-We reduce the key length to eliminate Eve's partial information.
+---
 
-### 5.1. Calculating Safe Key Length
-Using the formula from the theoretical docs:
-$$ \ell_{sec} = n_{sift} [ 1 - h(QBER) - leak_{EC} ] - \text{safety\_margin} $$
+## Step 2 – QBER Estimation and Privacy Amplification
 
-*   $h(p)$: Binary entropy function.
-*   $leak_{EC}$: Total bits exchanged during Cascade (parities + binary search steps).
+Step 2 quantifies Eve’s information from reconciliation and compresses the verified key using Toeplitz hashing.
+Implementation focuses on:
 
-### 5.2. Toeplitz Matrix Multiplication
-We need to multiply a binary matrix $T$ ($\ell_{sec} \times n_{old}$) by the key vector $K_{old}$.
+- Extending the baseline `_estimate_error_rate` logic.
+- Implementing a `PrivacyAmplifier` that uses `scipy.linalg.toeplitz`.
 
-**Efficient Construction:**
-A Toeplitz matrix is defined by its first row and first column.
-$T_{i,j} = v_{i-j}$ for a vector $v$.
+### 2.1 QBER Estimation Integration
 
-We can use `scipy.linalg.toeplitz` to construct it, but for large keys, full matrix multiplication is slow ($O(N^2)$).
-*   **Hackathon Scope**: Since key sizes are likely small (< 10,000 bits), standard matrix multiplication using `numpy` is acceptable.
-*   **Optimization**: Use `scipy.signal.fftconvolve` for $O(N \log N)$ multiplication if needed, but `np.matmul` modulo 2 is sufficient here.
+In `example_qkd.py`, `_estimate_error_rate` already samples a subset of same-basis bits and compares outcomes. For the
+extended implementation:
+
+- Keep that function unchanged for the quantum-phase sampling.
+- Add a new helper in `privacy.py` that combines:
+  - `errors_sample`: mismatches from `_estimate_error_rate`.
+  - `errors_cascade`: number of flips performed by `CascadeReconciliator` (obtainable from internal counters).
+
+Sketch:
 
 ```python
+def estimate_qber_from_cascade(
+    total_bits: int,
+    sample_errors: int,
+    cascade_errors: int,
+) -> float:
+    """Return QBER estimate combining sample and Cascade corrections."""
+
+    return (sample_errors + cascade_errors) / max(1, total_bits)
+```
+
+This helper is pure and testable without SquidASM.
+
+### 2.2 `PrivacyAmplifier` and Toeplitz Matrices
+
+`PrivacyAmplifier` performs the Toeplitz multiplication described in the theoretical doc. It is a local computation
+and **must not** be a generator.
+
+```python
+from typing import List, Sequence
+
+import numpy as np
 from scipy.linalg import toeplitz
 
-def privacy_amplify(key: np.ndarray, seed: np.ndarray, new_length: int) -> np.ndarray:
-    old_length = len(key)
-    
-    # Construct Toeplitz matrix from seed
-    # Seed length must be old_length + new_length - 1
-    col = seed[:new_length]
-    row = seed[new_length-1:]
-    
-    T = toeplitz(col, row)
-    
-    # Matrix multiplication over GF(2)
-    # T is (new_len, old_len), key is (old_len, 1)
-    res = np.matmul(T, key) % 2
-    return res.astype(int)
+
+class PrivacyAmplifier:
+    """Toeplitz-matrix-based privacy amplification.
+
+    Methods here never touch the SquidASM network; they operate entirely
+    on local numpy arrays over GF(2).
+    """
+
+    def amplify(
+        self,
+        key: Sequence[int],
+        seed: Sequence[int],
+        new_length: int,
+    ) -> List[int]:
+        key_arr = np.array(list(key), dtype=np.uint8)
+        old_length = key_arr.size
+        if len(seed) != old_length + new_length - 1:
+            raise ValueError("Invalid seed length for Toeplitz construction")
+
+        col = np.array(seed[:new_length], dtype=np.uint8)
+        row = np.array(seed[new_length - 1 :], dtype=np.uint8)
+        T = toeplitz(col, row)
+        res = (T @ key_arr) % 2
+        return res.astype(int).tolist()
 ```
 
-## 6. Integration Plan
+API behaviour:
 
-### Phase 1: Setup
-1.  Modify `AliceProgram` and `BobProgram` to accept a `shared_secret` in `__init__`.
-2.  Wrap sockets with `AuthenticatedSocket`.
+- **Input:** reconciled & verified key bits, Toeplitz seed, and desired output length.
+- **Output:** final secret key bits.
 
-### Phase 2: Reconciliation
-1.  After `_estimate_error_rate`, do not return `raw_key` immediately.
-2.  Instantiate `CascadeReconciliator`.
-3.  Run `reconcile(raw_key, estimated_qber)`.
-4.  Track `bits_revealed` counter.
+Security-parameter–driven key length calculation should be implemented in a separate helper, e.g.
+`compute_final_key_length(ell_ver, qber, leak_ec, leak_ver, epsilon_sec)` that directly mirrors the formulas from
+the theoretical doc.
 
-### Phase 3: Verification & Amplification
-1.  Run `verify_keys()`. If fail -> Abort.
-2.  Calculate `final_length` based on `bits_revealed` and `QBER`.
-3.  Run `privacy_amplify()`.
-4.  Return `final_secret_key`.
+Seed distribution is part of the protocol layer:
 
-## 7. SquidASM Specific Considerations
+- Alice samples a random seed, sends it over the `AuthenticatedSocket` as a `StructuredMessage("PA_SEED", seed_bits)`.
+- Bob reconstructs the same Toeplitz matrix locally using `PrivacyAmplifier`.
 
-*   **Yielding**: Every socket operation (`send`, `recv`) inside the helper classes must be properly yielded in the main `run` generator.
-    *   *Pattern*: The helper methods should be generators (`def func(...) -> Generator...`).
-    *   *Usage*: `result = yield from helper.func(...)`.
-*   **Logging**: Use `LogManager` to trace the protocol steps, especially QBER and verification results.
-*   **Simulation Config**: Ensure the `link_noise` in the simulation configuration is high enough to test Cascade (e.g., 0.05) but lower than the abort threshold (0.11).
+---
+
+## Step 3 – Authentication Layer
+
+Step 3 wraps the classical channel with authentication. In SquidASM this is modelled as a **decorator** around
+`ClassicalSocket` from `squidasm/squidasm/sim/stack/csocket.py`.
+
+### 3.1 `AuthenticatedSocket` Wrapper
+
+`ClassicalSocket` exposes a small API:
+
+- `send(msg: str) -> None`
+- `recv(**kwargs) -> Generator[EventExpression, None, str]`
+- `send_int`, `recv_int`, `send_float`, `recv_float`
+- `send_structured(msg: StructuredMessage) -> None`
+- `recv_structured(**kwargs) -> Generator[EventExpression, None, StructuredMessage]`
+
+`AuthenticatedSocket` mirrors this API but adds HMAC-based authentication on top, treating
+`StructuredMessage.payload` as the message body.
+
+```python
+import hashlib
+import hmac
+import pickle
+from typing import Generator
+
+from netqasm.sdk.classical_communication.message import StructuredMessage
+from pydynaa import EventExpression
+from squidasm.sim.stack.csocket import ClassicalSocket
+
+
+class SecurityError(RuntimeError):
+    """Raised when authentication or integrity checks fail."""
+
+
+class AuthenticatedSocket:
+    """Wrapper that adds HMAC-SHA256 authentication to ClassicalSocket.
+
+    All recv-methods that block on the network are generators and must be
+    used with ``yield from`` by callers.
+    """
+
+    def __init__(self, socket: ClassicalSocket, key: bytes) -> None:
+        self._socket = socket
+        self._key = key
+
+    def send_structured(self, msg: StructuredMessage) -> None:
+        payload_bytes = pickle.dumps(msg.payload)
+        tag = hmac.new(self._key, payload_bytes, hashlib.sha256).digest()
+        envelope = StructuredMessage(msg.header, (msg.payload, tag))
+        self._socket.send_structured(envelope)
+
+    def recv_structured(
+        self,
+        **kwargs,
+    ) -> Generator[EventExpression, None, StructuredMessage]:
+        envelope = yield from self._socket.recv_structured(**kwargs)
+        payload, tag = envelope.payload
+        payload_bytes = pickle.dumps(payload)
+        expected_tag = hmac.new(self._key, payload_bytes, hashlib.sha256).digest()
+        if not hmac.compare_digest(tag, expected_tag):
+            raise SecurityError("Invalid authentication tag")
+        return StructuredMessage(envelope.header, payload)
+
+    # Optional: thin wrappers for send/recv of raw strings or ints if needed.
+```
+
+Design notes:
+
+- Serialization: `pickle.dumps` is used to match `StructuredMessage` behaviour; callers should avoid unordered
+  structures (or use `OrderedDict`) in payloads to keep serialization deterministic.
+- Generator delegation: every call to `recv_structured` must be `yield from auth_socket.recv_structured()`.
+
+### 3.2 Integration into `AliceProgram` / `BobProgram`
+
+In `protocol.py`, the extended QKD programs should:
+
+- Declare classical and EPR sockets in `ProgramMeta` as in `example_qkd.py`.
+- Immediately wrap the classical socket in `AuthenticatedSocket` at the top of `run()`.
+
+Example sketch for Alice:
+
+```python
+from squidasm.sim.stack.program import ProgramContext
+
+
+def run(self, context: ProgramContext):
+    raw_socket = context.csockets[self.PEER]
+    auth_socket = AuthenticatedSocket(raw_socket, self._auth_key)
+
+    pairs_info = yield from self._distribute_states(context, True)
+    # ALL_MEASURED synchronization as in example_qkd.py
+
+    # From this point on, always use auth_socket
+    pairs_info = yield from self._filter_bases(auth_socket, pairs_info, True)
+    # ... cascade, verification, privacy amplification ...
+```
+
+`_auth_key` can be provided via constructor or configuration and represents the pre-shared Wegman–Carter key
+buffer for this run (modelled here via HMAC-SHA256 for simplicity).
+
+---
+
+## Step 4 – Integration Flow and Verification
+
+Step 4 assembles all components into a single `run()` flow for Alice and Bob. The high-level sequence in
+`AliceProgram.run` is:
+
+1. EPR-based raw key generation (existing `QkdProgram._distribute_states`).
+2. Sifting (`_filter_bases`).
+3. Sampling-based error estimation (`_estimate_error_rate`).
+4. Cascade reconciliation (`CascadeReconciliator`).
+5. Key verification (`KeyVerifier`).
+6. QBER + leakage-based final key length calculation.
+7. Privacy amplification (`PrivacyAmplifier`).
+
+### 4.1 Example `AliceProgram.run` Sketch
+
+```python
+from typing import Any, Dict
+
+from netqasm.sdk.classical_communication.message import StructuredMessage
+from squidasm.sim.stack.program import ProgramContext
+
+from hackathon_challenge.auth import AuthenticatedSocket
+from hackathon_challenge.privacy import PrivacyAmplifier, estimate_qber_from_cascade
+from hackathon_challenge.reconciliation import CascadeReconciliator
+from hackathon_challenge.verify import KeyVerifier
+
+
+def run(self, context: ProgramContext):
+    raw_socket = context.csockets[self.PEER]
+    auth_socket = AuthenticatedSocket(raw_socket, self._auth_key)
+
+    pairs_info = yield from self._distribute_states(context, True)
+    # Synchronize using ALL_MEASURED as in example_qkd.py
+
+    # Classical post-processing
+    pairs_info = yield from self._filter_bases(auth_socket, pairs_info, True)
+    pairs_info, sample_qber = yield from self._estimate_error_rate(
+        auth_socket, pairs_info, self._num_test_bits, True
+    )
+
+    raw_key = [
+        pair.outcome
+        for pair in pairs_info
+        if pair.same_basis and not pair.test_outcome
+    ]
+
+    reconciler = CascadeReconciliator(auth_socket, True, raw_key, rng_seed=self._cascade_seed)
+    leakage = yield from reconciler.reconcile()
+    reconciled_key = reconciler.get_key()
+
+    verifier = KeyVerifier()
+    verified = yield from verifier.verify(auth_socket, reconciled_key, is_alice=True)
+    if not verified:
+        raise RuntimeError("Key verification failed")
+
+    total_qber = estimate_qber_from_cascade(
+        total_bits=len(reconciled_key),
+        sample_errors=int(sample_qber * len(reconciled_key)),
+        cascade_errors=leakage,  # or a separate error counter
+    )
+
+    final_len = compute_final_key_length(
+        ell_ver=len(reconciled_key),
+        qber=total_qber,
+        leak_ec=leakage,
+        leak_ver=self._verification_leak,
+        epsilon_sec=self._epsilon_sec,
+    )
+
+    # Seed distribution
+    seed = self._rng.integers(0, 2, size=len(reconciled_key) + final_len - 1).tolist()
+    auth_socket.send_structured(StructuredMessage("PA_SEED", seed))
+
+    amplifier = PrivacyAmplifier()
+    final_key = amplifier.amplify(reconciled_key, seed, final_len)
+
+    return {"secret_key": final_key}
+```
+
+Bob’s flow mirrors this closely but receives `PA_SEED` and does not initiate certain messages.
+
+### 4.2 Result Structure and `ProgramMeta` Pitfall
+
+- `run()` must return a `Dict[str, Any]` compatible with SquidASM’s `run()` helper. Typical keys: `"secret_key"`,
+  `"qber"`, `"leakage"`.
+- `ProgramMeta` **must** list all used sockets:
+  - Missing entries for `csockets` or `epr_sockets` will raise `KeyError` when accessing `context.csockets[...]` or
+    `context.epr_sockets[...]`.
+
+---
+
+## SquidASM-Specific Pitfalls (10+ Examples)
+
+This section lists concrete, recurring issues when extending `example_qkd.py`.
+
+- **Forgotten `yield from` on network calls**: Calling `socket.recv_structured()` without `yield from` returns a
+  generator and never blocks on the network.
+- **Missing `yield from connection.flush()` after quantum operations**: In `_distribute_states`, quantum operations
+  only take effect after `yield from conn.flush()`. Forgetting this can lead to immediate completion and no
+  entanglement generation.
+- **Accessing measurement futures without casting**: Measurement results are `Future`-like objects; they must be cast
+  with `int(m)` before use.
+- **Mismatched send/recv patterns**: If both sides call `send_structured` without a matching `recv_structured`, the
+  simulation deadlocks. Design clear initiator/responder roles.
+- **Reusing non-deterministic payloads in HMAC**: If `dict` instances are used directly in `StructuredMessage.payload`
+  on Python < 3.7, key order is not guaranteed, breaking HMAC verification. Use lists or `OrderedDict`.
+- **Exceeding `max_qubits` in `ProgramMeta`**: Allocating more qubits than declared raises `AllocError`. Set
+  `max_qubits` conservatively above worst-case simultaneous usage.
+- **Multiple outstanding EPR requests**: Creating many EPR pairs without flushing or receiving can trigger subtle
+  scheduling bugs (see tests around EPR handling in `squidasm/tests`). Always pair `create_keep`/`recv_keep` calls with
+  `yield from conn.flush()`.
+- **Missing `csockets` / `epr_sockets` entries in `ProgramMeta`**: Accessing a non-declared socket name from
+  `context.csockets` or `context.epr_sockets` results in `KeyError` at runtime.
+- **Using blocking CPU-heavy code inside generators**: Long-running classical computations (e.g., large Toeplitz
+  multiplications) inside a generator will block the event loop. Keep heavy math outside generators where possible.
+- **Non-unique `StructuredMessage.header` values**: Reusing the same header for different message types makes debugging
+  hard and can cause protocol confusion. Use explicit, stable headers per message type.
+
+---
+
+## Design Patterns and Class Responsibilities
+
+The implementation should explicitly follow a few standard design patterns to keep the protocol extensible.
+
+- **Strategy Pattern (Reconciliation)**: `Reconciliator` interface with concrete strategies:
+  - `CascadeReconciliator` (interactive, baseline).
+  - Future `LDPCRreconciliator` (non-interactive, syndrome-based).
+- **Decorator / Wrapper Pattern (Authentication)**: `AuthenticatedSocket` wraps `ClassicalSocket` and exposes the same
+  API while adding HMAC authentication.
+- **Dataclass Pattern (Protocol State)**: `PairInfo` in `example_qkd.py`, `PassHistory`, and potential `CascadeBlock`
+  / `PairInfo` variants should all be `@dataclass` instances passed between stages.
+- **Static Helper Methods (Math Utilities)**: Pure helper functions for parity computation, GF operations, QBER
+  formulas, and key length calculations should be module-level or `@staticmethod`s to make them easy to unit test.
+- **Factory Pattern (Configuration)**: A small factory (e.g. `build_qkd_protocol(config)`) can select between
+  reconciliation strategies (Cascade vs LDPC) and authentication options based on a configuration object.
+- **Logging Pattern**: Every main class (`CascadeReconciliator`, `PrivacyAmplifier`, `AuthenticatedSocket`) should
+  obtain loggers via `LogManager.get_stack_logger(__name__)` and include simulation time in log messages where useful.
+
+---
+
+## SquidASM API Reference (QKD-Relevant Subset)
+
+This section summarizes the most relevant APIs used by the QKD implementation. For full details, see the main
+SquidASM docs under `squidasm/docs/`.
+
+- `ClassicalSocket` (`squidasm/sim/stack/csocket.py`)
+  - `send(msg: str) -> None`
+  - `recv(**kwargs) -> Generator[EventExpression, None, str]`
+  - `send_structured(msg: StructuredMessage) -> None`
+  - `recv_structured(**kwargs) -> Generator[EventExpression, None, StructuredMessage]`
+- `ProgramContext` (`squidasm/sim/stack/program.py`)
+  - `connection`: quantum connection, provides `flush()`.
+  - `csockets`: mapping from peer name to `ClassicalSocket`.
+  - `epr_sockets`: mapping from peer name to EPR sockets used in `create_keep` / `recv_keep`.
+- `ProgramMeta`
+  - Declares `name`, `csockets`, `epr_sockets`, and `max_qubits`. Missing or incorrect entries cause runtime errors.
+- `StructuredMessage` (`netqasm.sdk.classical_communication.message`)
+  - `StructuredMessage(header: str, payload: Any)` – used as the primary container for all protocol messages.
+- `EPRSocket` (via `context.epr_sockets`)
+  - `create_keep(num_pairs)` and `recv_keep(num_pairs)` allocate entangled pairs; must be followed by
+    `yield from connection.flush()`.
+- `LogManager`
+  - `LogManager.get_stack_logger(__name__)` – returns a logger configured for the simulation stack.
+- `run` helper (`squidasm/run/stack/run.py`)
+  - `run(config, programs, num_times)` – executes the configured programs and returns per-run result dictionaries.
+
+---
+
+## Testing and Error-Handling Guidelines
+
+- **Unit tests (pure helpers):**
+  - Test `_permute_indices`, parity computation, `estimate_qber_from_cascade`, and Toeplitz multiplication using
+    plain Python/NumPy without SquidASM.
+- **Integration tests (full protocol):**
+  - Adapt `squidasm/examples/run_examples.py` or add dedicated tests under `qia-hackathon-2025/hackathon_challenge/` to
+    run Alice/Bob programs end-to-end and check that `secret_key` matches on both sides for various `link_noise`.
+- **Error handling:**
+  - Treat `AllocError` and `TimeoutError` (from SquidASM) as hard failures for a run.
+  - Use a custom `SecurityError` for authentication or verification failures; abort the run and log a security alert.
+  - For protocol-level inconsistencies (unexpected headers, malformed payloads), raise a clear exception and fail
+    fast rather than silently desynchronizing.
+
