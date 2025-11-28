@@ -9,10 +9,7 @@ qia-hackathon-2025/
 ├── hackathon_challenge/   # Main implementation (see below)
 ├── docs/                  # Documentation
 │   ├── challenges/qkd/    # Challenge specifications
-│   ├── tutorials/         # SquidASM usage guides
-│   ├── api/               # API reference
-│   └── Advanced/          # Advanced topics
-├── templates/             # Starter templates for 2/3-node networks
+|   └── coding_guidelines/ # Numpydocs for coding guidelines
 └── challenges/            # Original challenge PDFs
 ```
 
