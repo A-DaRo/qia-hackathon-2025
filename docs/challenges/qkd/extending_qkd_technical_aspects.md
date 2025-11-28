@@ -414,7 +414,6 @@ Design notes:
 - Generator delegation: every call to `recv_structured` must be `yield from auth_socket.recv_structured()`.
 
 ### 3.2 Integration into `AliceProgram` / `BobProgram`
-
 In `protocol.py`, the extended QKD programs should:
 
 - Declare classical and EPR sockets in `ProgramMeta` as in `example_qkd.py`.
