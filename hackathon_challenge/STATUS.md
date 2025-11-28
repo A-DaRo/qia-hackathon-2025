@@ -5,38 +5,38 @@
 
 ---
 
-## ✅ Completed
+## Completed
 
 ### Phase 0: Foundation Setup
-- ✅ Complete directory structure (nested, modular architecture)
-- ✅ `pyproject.toml` with all dependencies
-- ✅ Configuration files (`config.yaml`, `network_config.yaml`)
-- ✅ Protocol constants (`core/constants.py`)
-- ✅ Base dataclasses (`core/base.py`)
-- ✅ All package `__init__.py` files
-- ✅ Complete test structure (unit + integration)
-- ✅ Documentation (`README.md`, `SETUP.md`)
+-  Complete directory structure (nested, modular architecture)
+-  `pyproject.toml` with all dependencies
+-  Configuration files (`config.yaml`, `network_config.yaml`)
+-  Protocol constants (`core/constants.py`)
+-  Base dataclasses (`core/base.py`)
+-  All package `__init__.py` files
+-  Complete test structure (unit + integration)
+-  Documentation (`README.md`, `SETUP.md`)
 
 ### Fully Implemented Modules
-- ✅ `core/constants.py` - All protocol constants defined
-- ✅ `core/base.py` - CascadeConfig, PrivacyConfig, QKDResult dataclasses
-- ✅ `auth/exceptions.py` - SecurityError, IntegrityError
-- ✅ `reconciliation/history.py` - PassHistory dataclass
-- ✅ `privacy/entropy.py` - binary_entropy, compute_final_key_length
-- ✅ `privacy/estimation.py` - estimate_qber_from_cascade
-- ✅ `privacy/utils.py` - generate_toeplitz_seed
-- ✅ `privacy/amplifier.py` - PrivacyAmplifier.amplify (complete)
-- ✅ `utils/math.py` - xor_bits
+-  `core/constants.py` - All protocol constants defined
+-  `core/base.py` - CascadeConfig, PrivacyConfig, QKDResult dataclasses
+-  `auth/exceptions.py` - SecurityError, IntegrityError
+-  `reconciliation/history.py` - PassHistory dataclass
+-  `privacy/entropy.py` - binary_entropy, compute_final_key_length
+-  `privacy/estimation.py` - estimate_qber_from_cascade
+-  `privacy/utils.py` - generate_toeplitz_seed
+-  `privacy/amplifier.py` - PrivacyAmplifier.amplify (complete)
+-  `utils/math.py` - xor_bits
 
 ### Test Structure
-- ✅ `tests/conftest.py` - Pytest fixtures
-- ✅ All test files created with TODO skeletons
-- ✅ Unit tests: auth, cascade, verification, privacy, utils
-- ✅ Integration tests: full_protocol, error_scenarios
+-  `tests/conftest.py` - Pytest fixtures
+-  All test files created with TODO skeletons
+-  Unit tests: auth, cascade, verification, privacy, utils
+-  Integration tests: full_protocol, error_scenarios
 
 ---
 
-## 🔨 To Do (Implementation Order)
+## To Do (Implementation Order)
 
 ### Phase 1: Authentication Layer
 **Priority: HIGH** - Required by all other phases
@@ -110,7 +110,7 @@
 **Priority: LOW** - Most functions already implemented
 
 **Files to complete:**
-- All core functions already implemented ✅
+- All core functions already implemented
 - Just verify and test
 
 **Tests:** `tests/unit/test_privacy.py`
@@ -141,23 +141,23 @@
 
 ---
 
-## 📊 Progress Tracking
+## Progress Tracking
 
 | Phase | Status | Files | Tests | Priority |
 |-------|--------|-------|-------|----------|
-| 0: Foundation | ✅ Complete | 30+ files | Fixtures | - |
-| 1: Authentication | ⏳ TODO | 2 files | 3 tests | HIGH |
-| 2: Reconciliation | ⏳ TODO | 3 files | 5 tests | HIGH |
-| 3: Verification | ⏳ TODO | 3 files | 4 tests | MEDIUM |
-| 4: Privacy | ✅ ~90% | 0 files | 4 tests | LOW |
-| 5: Integration | ⏳ TODO | 3 files | 4 tests | HIGH |
+| 0: Foundation | Complete | 30+ files | Fixtures | - |
+| 1: Authentication | TODO | 2 files | 3 tests | HIGH |
+| 2: Reconciliation | TODO | 3 files | 5 tests | HIGH |
+| 3: Verification | TODO | 3 files | 4 tests | MEDIUM |
+| 4: Privacy | ~90% | 0 files | 4 tests | LOW |
+| 5: Integration | TODO | 3 files | 4 tests | HIGH |
 
 **Total Lines of Code (Structure):** ~2,500 lines  
 **Estimated Implementation:** ~3,000 additional lines
 
 ---
 
-## 🎯 Recommended Implementation Path
+## Recommended Implementation Path
 
 ### Week 1: Authentication + Reconciliation
 1. **Day 1-2**: Implement `AuthenticatedSocket` + tests
@@ -171,7 +171,7 @@
 
 ---
 
-## 📚 Key Reference Documents
+## Key Reference Documents
 
 1. **Implementation Plan** (Enhanced)
    - Location: `../challenges/qkd/implementation_plan.md`
@@ -191,7 +191,7 @@
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
 # 1. Install package
@@ -208,7 +208,7 @@ pip install -e ".[dev]"
 
 ---
 
-## 📝 Notes
+## Notes
 
 - **Design Philosophy**: Nested, modular architecture for extensibility
 - **Separation of Concerns**: Each package has a single responsibility
@@ -218,7 +218,7 @@ pip install -e ".[dev]"
 
 ---
 
-## ✨ Highlights
+## Highlights
 
 ### Improved Structure Features
 1. **Nested packages** instead of flat modules
