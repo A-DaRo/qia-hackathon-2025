@@ -203,14 +203,14 @@ Edit `network_config.yaml` to adjust:
 
 ## Common Pitfalls to Avoid
 
-1. ❌ Forgetting `yield from` on network calls
-2. ❌ Missing `connection.flush()` after EPR operations
-3. ❌ Not casting measurement futures with `int()`
-4. ❌ Mismatched send/recv patterns (deadlock)
-5. ❌ Non-deterministic serialization for HMAC
-6. ❌ Exceeding `max_qubits` in ProgramMeta
-7. ❌ Missing socket declarations in ProgramMeta
-8. ❌ Blocking CPU-heavy code inside generators
+1. Forgetting `yield from` on network calls
+2. Missing `connection.flush()` after EPR operations
+3. Not casting measurement futures with `int()`
+4. Mismatched send/recv patterns (deadlock)
+5. Non-deterministic serialization for HMAC
+6. Exceeding `max_qubits` in ProgramMeta
+7. Missing socket declarations in ProgramMeta
+8. Blocking CPU-heavy code inside generators
 
 See `implementation_plan.md` §7 for complete list and solutions.
 
